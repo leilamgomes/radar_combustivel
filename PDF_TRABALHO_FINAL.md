@@ -1,503 +1,293 @@
 # Trabalho Final em Grupo — Pipeline MongoDB → Redis
 ## Plataforma Radar Combustível
 
----
-
-# 1. CAPA
-
-**MBA em Tecnologia - Database In-Memory**
-
-**Disciplina:** Database In-Memory
-
-**Trabalho Final em Grupo**
-
-**Título:** Pipeline de Dados em Tempo Real: MongoDB → Redis para Plataforma Radar Combustível
-
-**Data:** 2026
+Este arquivo serve como base do conteúdo do PDF final a ser diagramado e exportado.
 
 ---
 
-# 2. INTEGRANTES
+# 1. Capa
 
-| Nome | RM | Contribuição Principal |
-|------|-----|------------------------|
-| [Nome do Integrante 1] | [RM] | [Descrever contribuição] |
-| [Nome do Integrante 2] | [RM] | [Descrever contribuição] |
-| [Nome do Integrante 3] | [RM] | [Descrever contribuição] |
-| [Adicionar mais integrantes se necessário] | | |
-
-**Grupo com até 6 integrantes**
+**MBA em Tecnologia — Database In-Memory**  
+**Disciplina:** Database In-Memory  
+**Trabalho Final em Grupo**  
+**Título:** Pipeline MongoDB → Redis aplicado à Plataforma Radar Combustível  
+**Ano:** 2026
 
 ---
 
-# 3. DESCRIÇÃO DO PROBLEMA
+# 2. Integrantes
 
-## 3.1 Contexto do Caso Radar Combustível
+| Nome | RM | Contribuição principal |
+|---|---|---|
+| [Preencher] | [Preencher] | [Preencher] |
+| [Preencher] | [Preencher] | [Preencher] |
+| [Preencher] | [Preencher] | [Preencher] |
 
-A plataforma **Radar Combustível** acompanha informações de postos de gasolina, preços de combustíveis, localização geográfica, buscas e interações dos usuários em todo o território brasileiro. O objetivo do projeto é transformar esses dados transacionais em uma **camada de consulta rápida** capaz de responder perguntas de negócio em tempo real.
-
-## 3.2 Problemas de Negócio a Resolver
-
-O trabalho foi desenvolvido para responder às seguintes perguntas críticas:
-
-1. **Quais postos estão com menor preço por região?**
-   - Permitir que usuários encontrem o combustível mais barato próximo a eles
-
-2. **Quais combustíveis estão em alta?**
-   - Identificar tendências de busca e demanda por tipo de combustível
-
-3. **Quais bairros e cidades apresentam maior volume de buscas?**
-   - Mapear o comportamento geográfico dos usuários
-
-4. **Quais postos tiveram maior variação recente de preço?**
-   - Alertar sobre oscilações de preço no mercado
-
-5. **Como os preços evoluem ao longo do tempo?**
-   - Análise histórica e temporal de preços por posto e combustível
-
-6. **Quais postos existem próximos a um ponto de referência?**
-   - Busca geográfica por proximidade
-
-## 3.3 Desafio Técnico
-
-O desafio principal consiste em construir um **pipeline de dados em tempo quase real** que:
-- Capture eventos e entidades do MongoDB (camada transacional/documental)
-- Processe e transforme esses dados
-- Disponibilize em Redis (camada de serving) para consultas de baixa latência
+Grupo com até 6 integrantes.
 
 ---
 
-# 4. ARQUITETURA DA SOLUÇÃO
+# 3. Descrição do problema
 
-## 4.1 Diagrama da Arquitetura
+## 3.1 Contexto
 
-> **[INSERIR IMAGEM DO DIAGRAMA DE ARQUITETURA AQUI]**
-> 
-> *Sugestão: Criar um diagrama mostrando:*
-> - *MongoDB com as 5 coleções*
-> - *Seta para "Python Consumer (Change Stream)"*
-> - *Seta para "Redis Stack" com as estruturas de dados*
-> - *Seta para "Dashboard / Queries"*
-> 
-> *Ferramentas sugeridas: draw.io, Lucidchart, ou diagrama ASCII no README*
+A plataforma Radar Combustível acompanha postos, preços, buscas, avaliações e localização geográfica. O desafio do trabalho foi transformar esse conjunto de dados em uma camada de consulta rápida, adequada para responder perguntas de negócio com baixa latência.
 
-## 4.2 Visão Geral da Arquitetura
+## 3.2 Perguntas de negócio atendidas
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         MONGODB (Fonte)                             │
-│  ┌──────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────────────┐  │
-│  │  postos  │ │eventos_preco│ │buscas_user  │ │avaliacoes_inter  │  │
-│  └──────────┘ └─────────────┘ └─────────────┘ └──────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │              localizacoes_postos                             │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ Change Stream
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    PIPELINE PYTHON CONSUMER                         │
-│                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │   Backfill   │  │   Event      │  │    Time      │             │
-│  │   (batch)    │→ │   Router     │→ │   Series     │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-│                           ↓                                        │
-│                    ┌──────────────┐                              │
-│                    │  Transform   │                              │
-│                    └──────────────┘                              │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      REDIS (Camada de Serving)                      │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  HASHES        │  SORTED SETS      │  GEO      │  TS       │  │
-│  │  ─────────     │  ───────────      │  ────     │  ───      │  │
-│  │  posto:{id}    │  ranking:precos   │ geo:postos│ ts:preco  │  │
-│  │                │  ranking:buscas   │           │           │  │
-│  │                │  ranking:avaliacao│           │           │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│                         ↓                                          │
-│              ┌───────────────────┐                                 │
-│              │  idx:postos       │  (RediSearch)                  │
-│              └───────────────────┘                                 │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    VISUALIZAÇÃO (Streamlit)                         │
-│                                                                     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ Visão    │ │ Top      │ │ Ranking  │ │ Variação │ │ Séries   │ │
-│  │ Geral    │ │ Avalia   │ │ Preço    │ │ Preço    │ │ Temporais│ │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
-│  ┌──────────┐                                                      │
-│  │ Proximi  │                                                      │
-│  │ dade     │                                                      │
-│  └──────────┘                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+1. Quais postos têm menor preço por região?
+2. Quais combustíveis estão em alta?
+3. Quais UFs, cidades e bairros têm maior volume de buscas?
+4. Quais postos são mais bem avaliados?
+5. Quais postos tiveram maior variação recente de preço?
+6. Como os preços evoluem ao longo do tempo?
+7. Quais postos estão próximos a um ponto de referência?
+
+## 3.3 Problema técnico
+
+O projeto precisava:
+
+- usar MongoDB como fonte transacional/documental;
+- construir um pipeline MongoDB → Redis;
+- modelar estruturas Redis coerentes com o padrão de acesso;
+- entregar visualização objetiva e executável.
+
+---
+
+# 4. Arquitetura da solução
+
+## 4.1 Diagrama da arquitetura
+
+> Inserir aqui o diagrama final da arquitetura.
+
+Sugestão de elementos:
+- MongoDB com 5 coleções;
+- consumer Python;
+- Redis Stack com Hashes, Sorted Sets, GEO, Time Series e RediSearch;
+- dashboard Streamlit.
+
+## 4.2 Visão geral da arquitetura
+
+```text
+MongoDB (5 coleções) → Python Consumer → Redis Stack → Dashboard Streamlit
 ```
 
-## 4.3 Fluxo de Dados
+## 4.3 Fluxo de dados
 
-1. **Ingestão Inicial:** `mongo_seed.py` popula 5 coleções no MongoDB (100k documentos cada)
-2. **Indexação Redis:** `redis_indexes.py` cria snapshot inicial dos postos no Redis
-3. **Pipeline Backfill:** `mongodb_consumer.py` processa documentos existentes na ordem correta
-4. **Processamento em Tempo Real:** Change Stream captura novos inserts e atualiza Redis
-5. **Consultas:** Dashboard Streamlit lê exclusivamente do Redis
+1. O seed oficial popula as 5 coleções do MongoDB.
+2. O Redis recebe um snapshot inicial dos postos.
+3. O consumer executa o backfill completo.
+4. O Change Stream passa a processar novos inserts.
+5. O dashboard consulta somente o Redis.
 
 ---
 
-# 5. PIPELINE MONGODB → REDIS
+# 5. Pipeline MongoDB → Redis
 
-## 5.1 Componentes do Pipeline
+## 5.1 Coleções utilizadas
 
-### 5.1.1 MongoDB (Fonte de Eventos)
+| Coleção | Finalidade |
+|---|---|
+| `postos` | cadastro base |
+| `localizacoes_postos` | UF, cidade, bairro e geo |
+| `eventos_preco` | preço atual, preço anterior e variação |
+| `buscas_usuarios` | comportamento de busca |
+| `avaliacoes_interacoes` | avaliações e interações |
 
-O MongoDB armazena 5 coleções principais conforme escopo obrigatório:
-
-| Coleção | Propósito | Campos-chave |
-|---------|-----------|--------------|
-| `postos` | Cadastro de postos | cnpj, nome_fantasia, bandeira, endereco, location (GeoJSON) |
-| `eventos_preco` | Atualizações de preço | posto_id, combustivel, preco_anterior, preco_novo, variacao_pct, ocorrido_em |
-| `buscas_usuarios` | Buscas realizadas | usuario_id, tipo_combustivel, cidade, estado, geo_centro, consultado_em |
-| `avaliacoes_interacoes` | Interações dos usuários | posto_id, tipo, nota, util_count, created_at |
-| `localizacoes_postos` | Localização detalhada | posto_id, municipio, bairro, uf, codigo_ibge, geo |
-
-> **[INSERIR PRINT DO MONGO COMPASS OU MONGOSH MOSTRANDO AS COLEÇÕES]**
->
-> ```bash
-> > use radar_combustivel
-> > show collections
-> > db.postos.countDocuments()
-> > db.eventos_preco.countDocuments()
-> ```
-
-### 5.1.2 Change Stream
-
-O MongoDB Change Stream captura eventos de insert em tempo real:
+## 5.2 Ordem de processamento do backfill
 
 ```python
-pipeline = [
-    {"$match": {"operationType": "insert", "ns.coll": {"$in": list(COLECOES_SUPORTADAS)}}}
-]
-with db.watch(pipeline, full_document="updateLookup") as stream:
-    for change in stream:
-        collection_name = change["ns"]["coll"]
-        handle_event(redis, collection_name, change["fullDocument"])
+BACKFILL_ORDER = (
+    "postos",
+    "localizacoes_postos",
+    "eventos_preco",
+    "buscas_usuarios",
+    "avaliacoes_interacoes",
+)
 ```
 
-> **[INSERIR PRINT DO TERMINAL MOSTRANDO O CONSUMER RODANDO]**
-> 
-> *Exemplo de saída esperada:*
-> ```
-> [CONSUMER] Banco selecionado: radar_combustivel (500000 documentos detectados).
-> [CONSUMER] Iniciando backfill de postos...
-> [CONSUMER] Progresso postos: 5000 documentos processados.
-> [CONSUMER] Backfill concluído em postos: 100000 documentos.
-> [CONSUMER] Conectado ao MongoDB Change Stream
-> [CONSUMER] Aguardando inserts nas coleções monitoradas...
-> [EVENT] preco | 664b8... | GASOLINA_COMUM | 5.234 -> 5.189
-> [REDIS] ZADD ranking de preço | GASOLINA_COMUM | posto=664b8... | preço=5.189
-> ```
+Essa ordem garante que preço, geo, avaliação e ranking sejam processados sobre postos já existentes no Redis.
 
-### 5.1.3 Ordem de Processamento (Backfill)
+## 5.3 Change Stream
 
-A ordem correta de processamento é crítica para integridade:
+O consumer mantém escuta em tempo quase real para novos inserts das coleções monitoradas.
 
-```
-1. postos              → Cria hashes base no Redis
-2. localizacoes_postos → Atualiza dados geográficos
-3. eventos_preco       → Atualiza preços (postos já existem)
-4. buscas_usuarios     → Incrementa contadores de busca
-5. avaliacoes_interacoes → Atualiza ratings e interações
-```
+Observação importante:
+- a solução em tempo real foi modelada para `insert`;
+- o projeto não implementa replicação completa de `update` em documentos já existentes.
 
-## 5.2 Lógica de Transformação
+Isso foi considerado suficiente para o escopo do trabalho, porque a demonstração se apoia em seed + backfill + novos eventos append-only.
 
-Cada coleção passa por uma função de normalização específica:
-
-| Entidade | Função | Saída |
-|----------|--------|-------|
-| `postos` | `normalize_posto()` | `entity: "posto"` com dados cadastrais |
-| `localizacoes_postos` | `normalize_localizacao()` | `entity: "localizacao"` com geo enriquecido |
-| `eventos_preco` | `normalize_evento_preco()` | `entity: "preco"` com variação calculada |
-| `buscas_usuarios` | `normalize_busca()` | `entity: "busca"` com filtros e localização |
-| `avaliacoes_interacoes` | `normalize_avaliacao()` | `entity: "interacao"` com tipo e nota |
-
-> **[INSERIR PRINT DE CÓDIGO OU TERMINAL MOSTRANDO A TRANSFORMAÇÃO]**
-
-## 5.3 Tratamento de Falhas
+## 5.4 Resiliência
 
 O pipeline implementa:
 
-- **Reconexão automática:** `try/except` com `time.sleep(2)` no Change Stream
-- **Fallback de banco:** `resolve_database_name()` detecta banco com dados automaticamente
-- **Progress reporting:** Log a cada 5000 documentos no backfill
-- **Duplicate handling:** `ON_DUPLICATE LAST` no Time Series
+- reconexão automática;
+- fallback para a base correta quando a configuração aponta para banco vazio;
+- criação de séries temporais sob demanda;
+- logs de progresso durante o backfill.
+
+> Inserir print do terminal com o consumer em execução.
 
 ---
 
-# 6. ESTRUTURAS REDIS UTILIZADAS
+# 6. Estruturas Redis utilizadas
 
-## 6.1 Tabela de Estruturas e Justificativas
+## 6.1 Estruturas e justificativa
 
-| Estrutura | Chave (exemplo) | Dados Armazenados | Por Que Foi Escolhida |
-|-----------|-----------------|-------------------|----------------------|
-| **Hash** | `posto:{posto_id}` | Dados completos do posto (nome, bandeira, endereço, preços atuais por combustível, avaliação média, contadores) | Acesso O(1) a todos os atributos de um posto. Estrutura ideal para armazenar objetos complexos com múltiplos campos. |
-| **Sorted Set** | `ranking:precos:{combustivel}:cidade:{uf\|cidade}` | Posto ID → Preço (score) | Permite consulta "menor preço em uma cidade" com `ZRANGE` em O(log N). Mantém ordenação automática por preço. |
-| **Sorted Set** | `ranking:precos:{combustivel}:bairro:{uf\|cidade\|bairro}` | Posto ID → Preço (score) | Mesma lógica acima, granularidade de bairro para buscas mais precisas. |
-| **Sorted Set** | `ranking:combustiveis:buscas` | Combustível → Número de buscas | Contador ordenado. Permite identificar "combustíveis em alta" com `ZREVRANGE`. |
-| **Sorted Set** | `ranking:bairros:buscas` | Bairro composto → Número de buscas | Mapeia volume de buscas por território. |
-| **Sorted Set** | `ranking:cidades:buscas` | Cidade composta → Número de buscas | Mapeia volume de buscas por cidade. |
-| **Sorted Set** | `ranking:postos:avaliacao` | Posto ID → Nota média | Ranking de postos mais bem avaliados. |
-| **Sorted Set** | `ranking:postos:variacao_recente` | `{posto_id}\|{combustivel}` → Variação % absoluta | Identifica postos com maior oscilação de preço. |
-| **GEO** | `geo:postos` | Longitude, Latitude, Posto ID | Permite busca por proximidade com `GEOSEARCH` em raio de km. Essencial para "postos perto de mim". |
-| **Time Series** | `ts:preco:{posto_id}:{combustivel}` | Timestamp → Preço | Série temporal com labels (cidade, bairro, uf). Suporta agregações (`TS.MRANGE`) e análise de evolução de preços. |
-| **RediSearch** | `idx:postos` | Índice full-text sobre hashes | Busca por texto em nome de posto, filtros por tag (bandeira, cidade, bairro, uf), busca geoespacial combinada. |
+| Estrutura | Chave | Motivo |
+|---|---|---|
+| Hash | `posto:{posto_id}` | snapshot de leitura rápida por posto |
+| Sorted Set | `ranking:precos:*` | ranking de menor preço por região |
+| Sorted Set | `ranking:combustiveis:buscas` | combustíveis em alta |
+| Sorted Set | `ranking:cidades:buscas` | cidades mais buscadas |
+| Sorted Set | `ranking:bairros:buscas` | bairros mais buscados |
+| Sorted Set | `ranking:postos:avaliacao` | base para ranking de avaliação |
+| Sorted Set | `ranking:postos:variacao_recente` | maior variação recente |
+| GEO | `geo:postos` | consultas por proximidade |
+| Time Series | `ts:preco:{posto_id}:{combustivel}` | evolução de preços |
+| RediSearch | `idx:postos` | busca textual e filtros |
 
-## 6.2 Diagrama das Estruturas
+## 6.2 Decisão de modelagem
 
-> **[INSERIR DIAGRAMA OU ESQUEMA DAS ESTRUTURAS REDIS]**
+As estruturas foram escolhidas com base no padrão de acesso:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      ESTRUTURAS REDIS                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  HASHES                    SORTED SETS                         │
-│  ┌────────────────┐        ┌─────────────────────────────┐    │
-│  │ posto:abc123   │        │ ranking:precos:gasolina:... │    │
-│  │ ─────────────  │        │ posto:abc123 → 5.19         │    │
-│  │ nome: Posto X  │        │ posto:def456 → 5.25         │    │
-│  │ cidade: SP     │        └─────────────────────────────┘    │
-│  │ preco_gasolina │                                           │
-│  │   _comum: 5.19 │        ┌─────────────────────────────┐    │
-│  │ ...            │        │ ranking:combustiveis:buscas │    │
-│  └────────────────┘        │ GASOLINA_COMUM → 15234      │    │
-│                            │ ETANOL → 8934                 │    │
-│  GEO                       └─────────────────────────────┘    │
-│  ┌────────────────┐                                           │
-│  │ geo:postos     │        TIME SERIES                         │
-│  │ ─────────────  │        ┌─────────────────────────────┐    │
-│  │ -46.63 -23.55  │        │ ts:preco:abc123:gasolina_   │    │
-│  │   posto:abc123 │        │   comum                     │    │
-│  │ -46.64 -23.56  │        │ ─────────────────────────── │    │
-│  │   posto:def456 │        │ 1717353600000 → 5.19        │    │
-│  └────────────────┘        │ 1717357200000 → 5.21        │    │
-│                            │ labels: cidade=SP, ...      │    │
-│  REDISEARCH                └─────────────────────────────┘    │
-│  ┌────────────────┐                                           │
-│  │ idx:postos     │                                           │
-│  │ ─────────────  │                                           │
-│  │ nome (text)    │                                           │
-│  │ bandeira (tag) │                                           │
-│  │ cidade (tag)   │                                           │
-│  │ location (geo) │                                           │
-│  └────────────────┘                                           │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
-```
+- leitura rápida por posto → Hash;
+- ranking ordenado → Sorted Set;
+- proximidade geográfica → GEO;
+- histórico temporal → Time Series;
+- busca textual e filtros → RediSearch.
 
-## 6.3 Exemplos de Consultas
+## 6.3 Consulta de exemplo
 
-### Menor preço por cidade
-```redis
-ZRANGE ranking:precos:gasolina_comum:cidade:sp|sao_paulo 0 9 WITHSCORES
-```
-
-### Combustíveis mais buscados
 ```redis
 ZREVRANGE ranking:combustiveis:buscas 0 4 WITHSCORES
 ```
 
-### Postos próximos (raio de 10km)
 ```redis
 GEOSEARCH geo:postos FROMLONLAT -46.6333 -23.5505 BYRADIUS 10 km ASC COUNT 20 WITHDIST
 ```
 
-### Evolução de preço (série temporal)
-```redis
-TS.RANGE ts:preco:abc123:gasolina_comum - + AGGREGATION AVG 3600000
-```
-
-### Média de preços por combustível (agregação)
 ```redis
 TS.MRANGE - + AGGREGATION AVG 3600000 FILTER metric=price combustivel=GASOLINA_COMUM
 ```
 
-> **[INSERIR PRINT DO REDIS-CLI OU REDIS INSIGHT MOSTRANDO AS CONSULTAS]**
+> Inserir print do Redis Insight ou redis-cli.
 
 ---
 
-# 7. VISUALIZAÇÕES E RESULTADOS
+# 7. Visualizações e resultados
 
-## 7.1 Dashboard Streamlit
+## 7.1 Aba 1 — Visão Geral
 
-O dashboard foi desenvolvido em Streamlit com 6 abas principais:
+Entrega:
+- KPIs
+- combustíveis mais buscados
+- UFs mais buscadas
+- cidades mais buscadas
+- bairros mais buscados
 
-### Aba 1: Visão Geral
-Mostra KPIs principais e tendências de busca.
+> Inserir print da aba.
 
-> **[INSERIR PRINT DA ABA "VISÃO GERAL"]**
->
-> *Elementos a capturar:*
-> - Cards com métricas (Postos indexados, Volume de buscas, Postos no GEO, Média de avaliações)
-> - Gráfico de barras "Combustíveis mais buscados"
-> - Gráficos de UFs, Cidades e Bairros mais buscados
+## 7.2 Aba 2 — Top Avaliações
 
-### Aba 2: Top Avaliações
-Relação entre nota média e número de avaliações.
+Entrega:
+- ranking por **score ponderado**
+- combinação entre nota média e número de avaliações
 
-> **[INSERIR PRINT DA ABA "TOP AVALIAÇÕES"]**
->
-> *Elementos a capturar:*
-> - Scatter plot: nota média vs número de avaliações
-> - Tabela com top 10 postos
+Importante:
+- o projeto não usa apenas média simples;
+- isso evita que um posto com 1 avaliação nota 5 lidere injustamente sobre um posto com muitas avaliações e nota consistente.
 
-### Aba 3: Ranking de Preço
-Filtros por combustível, UF, cidade e bairro.
+> Inserir print da aba.
 
-> **[INSERIR PRINT DA ABA "RANKING DE PREÇO"]**
->
-> *Elementos a capturar:*
-> - Filtros dropdown (combustível, UF, cidade, bairro)
-> - Gráfico de barras com postos mais baratos
-> - Tabela com detalhes
+## 7.3 Aba 3 — Ranking de Preço
 
-### Aba 4: Variação de Preço
-Postos com maiores variações recentes.
+Entrega:
+- combustível
+- UF obrigatória
+- cidade opcional
+- bairro opcional
 
-> **[INSERIR PRINT DA ABA "VARIAÇÃO DE PREÇO"]**
->
-> *Elementos a capturar:*
-> - Filtro de combustível
-> - Tabela com preço antigo, atual, variação % e direção (⬆️ ⬇️ ➡️)
+O ranking exibe o preço atual mais recente consolidado por posto.
 
-### Aba 5: Séries Temporais
-Evolução de preços ao longo do tempo.
+> Inserir print da aba.
 
-> **[INSERIR PRINT DA ABA "SÉRIES TEMPORAIS"]**
->
-> *Elementos a capturar:*
-> - Gráfico de linha: evolução média do combustível
-> - Gráfico de linha: histórico de um posto específico
+## 7.4 Aba 4 — Variação de Preço
 
-### Aba 6: Proximidade
-Busca geográfica com mapa.
+Entrega:
+- filtro por combustível
+- apenas registros com variação real
+- tabela com destaque visual por tendência
 
-> **[INSERIR PRINT DA ABA "PROXIMIDADE"]**
->
-> *Elementos a capturar:*
-> - Seletor de UF/cidade/bairro ou posto de referência
-> - Slider de raio (km)
-> - Mapa com marcadores
-> - Tabela de postos próximos com distância
+> Inserir print da aba.
 
-## 7.2 Pipeline em Execução
+## 7.5 Aba 5 — Séries Temporais
 
-> **[INSERIR PRINT DO TERMINAL MOSTRANDO O CONSUMER PROCESSANDO]**
->
-> ```
-> [CONSUMER] Banco selecionado: radar_combustivel (500000 documentos detectados).
-> [CONSUMER] Iniciando backfill de postos...
-> [CONSUMER] Progresso postos: 5000 documentos processados.
-> ...
-> [CONSUMER] Backfill concluído: 500000 documentos processados.
-> [CONSUMER] Conectado ao MongoDB Change Stream
-> [CONSUMER] Aguardando inserts nas coleções monitoradas...
-> [EVENT] preco | 664b8f12... | GASOLINA_COMUM | 5.234 -> 5.189
-> [REDIS] ZADD ranking de preço | GASOLINA_COMUM | posto=664b8f12... | preço=5.189
-> [EVENT] busca | ETANOL | São Paulo
-> [REDIS] ZINCRBY ranking:combustiveis:buscas 1 ETANOL
-> ```
+Entrega:
+- média diária por combustível
+- linha de tendência de 7 dias
+- histórico detalhado por posto com pelo menos 2 pontos
 
-## 7.3 Redis com Dados Populados
+> Inserir print da aba.
 
-> **[INSERIR PRINT DO REDIS INSIGHT OU REDIS-CLI MOSTRANDO]**
->
-> - Keys existentes: `KEYS *`
-> - Hash de um posto: `HGETALL posto:{id}`
-> - Sorted Set de ranking: `ZRANGE ranking:precos:... 0 9 WITHSCORES`
-> - Geo: `GEOPOS geo:postos {posto_id}`
-> - Time Series: `TS.INFO ts:preco:...`
+## 7.6 Aba 6 — Proximidade
+
+Entrega:
+- busca por UF, cidade e bairro
+- ou posto de referência
+- expansão de raio quando necessário
+
+> Inserir print da aba.
+
+## 7.7 Pipeline em execução
+
+> Inserir print do terminal com:
+- backfill em progresso;
+- backfill concluído;
+- consumer aguardando inserts.
 
 ---
 
-# 8. CONCLUSÃO
+# 8. Conclusão
 
-## 8.1 Resumo da Solução
+## 8.1 Resultado
 
-Este trabalho demonstrou a implementação completa de um **pipeline de dados em tempo quase real** usando MongoDB como fonte de eventos e Redis como camada de serving, aplicado ao caso da Plataforma Radar Combustível.
+O projeto implementa uma solução completa MongoDB → Redis com:
 
-Os principais entregáveis foram:
+- base de dados adequada ao caso;
+- pipeline funcional;
+- estruturas Redis coerentes;
+- visualização útil e executável;
+- documentação alinhada à arquitetura.
 
-1. ✅ **Base de dados no MongoDB** com 5 coleções conforme escopo obrigatório
-2. ✅ **Pipeline MongoDB → Redis** funcional com Change Stream e backfill
-3. ✅ **Estruturas Redis adequadas:** Hashes, Sorted Sets, Geo, Time Series e RediSearch
-4. ✅ **Camada de visualização** em Streamlit com 6 abas cobrindo todas as perguntas de negócio
-5. ✅ **Documentação completa** do repositório
+## 8.2 Diferenciais positivos
 
-## 8.2 Diferenciais Implementados
+- consultas geográficas com `GEOSEARCH`;
+- séries temporais com `TS.RANGE` e `TS.MRANGE`;
+- score ponderado para ranking de avaliação;
+- ranking territorial por UF, cidade e bairro;
+- interface refinada em Streamlit;
+- tratamento básico de falhas e reconexão.
 
-- ✅ Consultas geográficas com `GEOSEARCH`
-- ✅ Séries temporais de preço com `TS.MRANGE` e agregações
-- ✅ Rankings hierárquicos (cidade + bairro)
-- ✅ RediSearch para busca full-text e filtros combinados
-- ✅ Interface refinada com tema visual customizado
-- ✅ Auto-refresh do dashboard
-- ✅ Tratamento de falhas e reconexão automática
+## 8.3 Limitação conhecida
 
-## 8.3 Aprendizados
-
-O projeto consolidou os conceitos trabalhados na disciplina:
-- Modelagem orientada a acesso
-- Redis como camada de leitura rápida
-- Pipeline de atualização orientado a eventos
-- Decisão adequada de estruturas de dados
-- Visualização de resultados em interface simples
+O Change Stream em tempo real foi implementado para `insert`, e não como replicação completa de `update`. Essa limitação deve ser apresentada com transparência, mas não compromete o escopo obrigatório do trabalho.
 
 ---
 
-# 9. LINK DO GITHUB
+# 9. Link do GitHub
 
-**Repositório:** [https://github.com/{usuario}/{repositorio}](https://github.com/{usuario}/{repositorio})
-
-**Estrutura do Repositório:**
-```
-radar-combustivel-fake-data-generator-main/
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── README.md
-├── docs/
-│   └── streaming-mongo-redis.md
-├── init/
-│   ├── mongo_seed.py
-│   └── redis_indexes.py
-├── pipeline/
-│   ├── event_transformer.py
-│   └── mongodb_consumer.py
-└── queries/
-    ├── data-view.py
-    └── redis_reader.py
-```
+**Repositório:** [Preencher link final]
 
 ---
 
-## CHECKLIST DE ENTREGA
+# Checklist para gerar o PDF final
 
-- [ ] PDF gerado com todas as seções
-- [ ] Diagrama da arquitetura inserido
-- [ ] Prints das 6 abas do Streamlit
-- [ ] Print do pipeline/consumer em execução
-- [ ] Print do Redis com dados
-- [ ] Link do GitHub funcional
-- [ ] Nomes e RMs dos integrantes preenchidos
-
----
-
-*Documento gerado para Trabalho Final - Database In-Memory*
-*MBA em Tecnologia - 2026*
+- [ ] preencher nomes e RMs
+- [ ] inserir diagrama da arquitetura
+- [ ] inserir prints das 6 abas
+- [ ] inserir print do consumer
+- [ ] inserir print do Redis
+- [ ] inserir link final do GitHub
+- [ ] exportar para PDF

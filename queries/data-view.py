@@ -199,9 +199,45 @@ def extract_uf_from_composed_region(value: str) -> str:
     return parts[0] if parts else "UF não informada"
 
 
+def prettify_fuel_label(value: str) -> str:
+    # Ajusta os rótulos de combustível para exibição amigável no dashboard.
+    fuel_map = {
+        "GASOLINA_COMUM": "GASOLINA COMUM",
+        "GASOLINA_ADITIVADA": "GASOLINA ADITIVADA",
+        "DIESEL_COMUM": "DIESEL COMUM",
+        "DIESEL_S10": "DIESEL S10",
+    }
+    return fuel_map.get(str(value), str(value))
+
+
+def fuel_display_options() -> List[str]:
+    # Lista de combustíveis pronta para uso nos componentes visuais.
+    return [prettify_fuel_label(item) for item in COMBUSTIVEIS]
+
+
+def fuel_code_from_label(label: str) -> str:
+    # Converte o rótulo exibido na tela para o valor original usado no Redis.
+    reverse_map = {prettify_fuel_label(raw): raw for raw in COMBUSTIVEIS}
+    return reverse_map.get(label, label)
+
+
 def station_snapshot(redis: Redis, posto_id: str) -> Dict[str, str]:
     # Recupera o hash resumido de um posto.
     return redis.hgetall(station_key(posto_id))
+
+
+def weighted_rating_score(
+    rating_mean: float, rating_count: int, global_mean: float, minimum_votes: int = 5
+) -> float:
+    # Calcula um score ponderado para evitar que poucas avaliações dominem o ranking.
+    votes = max(int(rating_count), 0)
+    if votes == 0:
+        return 0.0
+    return round(
+        ((votes / (votes + minimum_votes)) * float(rating_mean))
+        + ((minimum_votes / (votes + minimum_votes)) * float(global_mean)),
+        3,
+    )
 
 
 def enrich_station_rows(
@@ -331,7 +367,7 @@ def build_fuel_series_df(series_data: Any) -> pd.DataFrame:
 
 
 def build_station_options(redis: Redis, combustivel: str, limit: int = 300) -> List[str]:
-    # Monta opções estáveis apenas com postos que têm histórico para o combustível selecionado.
+    # Monta opções estáveis apenas com postos que têm histórico útil para o combustível selecionado.
     ts_pattern = f"ts:preco:*:{fuel_field_name(combustivel)}"
     series_keys = sorted(str(key) for key in redis.scan_iter(ts_pattern))
     options = []
@@ -344,6 +380,12 @@ def build_station_options(redis: Redis, combustivel: str, limit: int = 300) -> L
         if posto_id in seen:
             continue
         seen.add(posto_id)
+        try:
+            point_count = len(redis.execute_command("TS.RANGE", key, "-", "+"))
+        except Exception:
+            point_count = 0
+        if point_count < 2:
+            continue
         snapshot = station_snapshot(redis, posto_id)
         nome_fantasia = snapshot.get("nome_fantasia", posto_id)
         cidade = snapshot.get("cidade", "-")
@@ -466,6 +508,35 @@ def available_price_neighborhoods(
     return neighborhoods
 
 
+def state_price_ranking(
+    redis: Redis, catalog_df: pd.DataFrame, combustivel: str, uf: str, limit: int = 10
+) -> pd.DataFrame:
+    # Monta um ranking estadual usando os preços atuais já materializados no hash dos postos.
+    if catalog_df.empty or not uf:
+        return pd.DataFrame(columns=["posto_id", "preco"])
+
+    fuel_field = f"preco_{fuel_field_name(combustivel)}"
+    candidates = catalog_df[catalog_df["uf"] == uf]["posto_id"].dropna().unique().tolist()
+    rows = []
+    for posto_id in candidates:
+        snapshot = station_snapshot(redis, posto_id)
+        price_value = snapshot.get(fuel_field)
+        if price_value in (None, "", "0", 0):
+            continue
+        try:
+            price_float = float(price_value)
+        except (TypeError, ValueError):
+            continue
+        if price_float <= 0:
+            continue
+        rows.append({"posto_id": posto_id, "preco": price_float})
+
+    if not rows:
+        return pd.DataFrame(columns=["posto_id", "preco"])
+
+    return pd.DataFrame(rows).sort_values("preco", ascending=True).head(limit)
+
+
 def proximity_rows_from_geo(
     redis: Redis, geo_rows: List[List[Any]]
 ) -> List[Dict[str, Any]]:
@@ -500,7 +571,7 @@ def variation_direction_label(direction: str) -> str:
 
 def variation_row_style(row: pd.Series) -> List[str]:
     # Destaca a linha inteira conforme a direção da variação de preço.
-    direction = str(row.get("direcao", ""))
+    direction = str(row.get("Tendência", row.get("direcao", "")))
     if "⬆️" in direction:
         color = "rgba(239, 68, 68, 0.14)"
     elif "⬇️" in direction:
@@ -516,7 +587,7 @@ st.markdown(
     """
     <div class="dashboard-hero">
         <h1>⛽ Plataforma Radar Combustível</h1>
-        <p>Uma leitura simples, moderna e amigável dos sinais mais importantes do pipeline MongoDB → Redis.</p>
+        <p>Visualização em tempo real das estruturas alimentadas pelo consumidor MongoDB -> Redis.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -524,7 +595,7 @@ st.markdown(
 
 auto_refresh = st.sidebar.toggle("Atualização automática", value=True)
 refresh_seconds = st.sidebar.number_input(
-    "Intervalo (segundos)", min_value=3, max_value=60, value=8, step=1
+    "Intervalo (segundos)", min_value=3, max_value=60, value=10, step=1
 )
 
 redis = get_redis()
@@ -582,6 +653,7 @@ with tab1:
     if df_fuels.empty:
         st.info("Sem dados ainda em `ranking:combustiveis:buscas`.")
     else:
+        df_fuels["combustivel"] = df_fuels["combustivel"].apply(prettify_fuel_label)
         df_fuels["buscas"] = df_fuels["buscas"].astype(int)
         fig = px.bar(
             df_fuels.sort_values("buscas", ascending=True),
@@ -597,10 +669,10 @@ with tab1:
 
     render_section_header(
         "🔎 Territórios",
-        "Territórios com mais demanda",
+        "Territórios com maior demanda",
         "Recortes regionais para entender o volume de buscas por UF, Cidade e Bairro",
     )
-    col_uf, col_cidades, col_bairros = st.columns(3)
+    col_uf, col_cidades = st.columns(2)
 
     with col_uf:
         df_ufs = zset_to_df(
@@ -655,7 +727,9 @@ with tab1:
             apply_chart_theme(fig)
             st.plotly_chart(fig, width="stretch")
 
-    with col_bairros:
+    st.divider()
+
+    with st.container():
         df_bairros = zset_to_df(
             redis.zrevrange("ranking:bairros:buscas", 0, 999, withscores=True),
             ["bairro", "buscas"],
@@ -691,9 +765,10 @@ with tab3:
 
     price_cols = st.columns(4)
     with price_cols[0]:
-        ranking_fuel = st.selectbox(
-            "Combustível", COMBUSTIVEIS, index=0, key="ranking_fuel"
+        ranking_fuel_label = st.selectbox(
+            "Combustível", fuel_display_options(), index=0, key="ranking_fuel"
         )
+        ranking_fuel = fuel_code_from_label(ranking_fuel_label)
     with price_cols[1]:
         uf_options = []
         if not geo_catalog.empty:
@@ -711,8 +786,8 @@ with tab3:
         )
         selected_city = st.selectbox(
             "Cidade",
-            city_options,
-            index=0 if city_options else None,
+            [""] + city_options,
+            index=0,
             key="ranking_city",
         )
     with price_cols[3]:
@@ -730,38 +805,66 @@ with tab3:
             key="ranking_neighborhood",
         )
 
-    if not geo_catalog.empty and selected_uf and selected_city:
-        region_type = "bairro" if selected_neighborhood else "cidade"
-        region_name = (
-            neighborhood_region_name(selected_uf, selected_city, selected_neighborhood)
-            if selected_neighborhood
-            else city_region_name(selected_uf, selected_city)
-        )
-        region_label = (
-            f"{selected_neighborhood}, {selected_city} - {selected_uf}"
-            if selected_neighborhood
-            else f"{selected_city} - {selected_uf}"
-        )
-        df_price = zset_to_df(
-            redis.zrange(
-                region_price_key(ranking_fuel, region_type, region_name),
-                0,
-                9,
-                withscores=True,
-            ),
-            ["posto_id", "preco"],
-        )
-        df_price = enrich_station_rows(redis, df_price)
-        if not df_price.empty:
-            df_price = df_price[df_price["uf"] == selected_uf]
-            df_price = df_price[df_price["cidade"] == selected_city]
-            if selected_neighborhood:
-                df_price = df_price[df_price["bairro"] == selected_neighborhood]
+    if not geo_catalog.empty and selected_uf:
+        if not selected_city:
+            region_label = f"{selected_uf}"
+            df_price = state_price_ranking(redis, geo_catalog, ranking_fuel, selected_uf)
+            df_price = enrich_station_rows(redis, df_price)
+        else:
+            region_type = "bairro" if selected_neighborhood else "cidade"
+            region_name = (
+                neighborhood_region_name(selected_uf, selected_city, selected_neighborhood)
+                if selected_neighborhood
+                else city_region_name(selected_uf, selected_city)
+            )
+            region_label = (
+                f"{selected_neighborhood}, {selected_city} - {selected_uf}"
+                if selected_neighborhood
+                else f"{selected_city} - {selected_uf}"
+            )
+            df_price = zset_to_df(
+                redis.zrange(
+                    region_price_key(ranking_fuel, region_type, region_name),
+                    0,
+                    9,
+                    withscores=True,
+                ),
+                ["posto_id", "preco"],
+            )
+            df_price = enrich_station_rows(redis, df_price)
+            if not df_price.empty:
+                df_price = df_price[df_price["uf"] == selected_uf]
+                df_price = df_price[df_price["cidade"] == selected_city]
+                if selected_neighborhood:
+                    df_price = df_price[df_price["bairro"] == selected_neighborhood]
 
         if df_price.empty:
             st.info("Sem ranking de preço para os filtros atuais.")
         else:
+            fuel_field = fuel_field_name(ranking_fuel)
             df_price["preco"] = df_price["preco"].astype(float)
+            df_price["preco_atualizado_ts"] = df_price["posto_id"].map(
+                lambda posto_id: int(
+                    station_snapshot(redis, posto_id).get(
+                        f"atualizado_preco_{fuel_field}", 0
+                    )
+                    or 0
+                )
+            )
+            df_price["dedupe_key"] = df_price.apply(
+                lambda row: row["cnpj"]
+                if str(row.get("cnpj", "-")).strip() not in {"", "-"}
+                else row["nome_fantasia"],
+                axis=1,
+            )
+            df_price = (
+                df_price.sort_values(
+                    ["dedupe_key", "preco_atualizado_ts"], ascending=[True, False]
+                )
+                .drop_duplicates(subset=["dedupe_key"], keep="first")
+                .sort_values("preco", ascending=True)
+                .head(10)
+            )
             fig = px.bar(
                 df_price.sort_values("preco", ascending=False),
                 x="preco",
@@ -773,11 +876,24 @@ with tab3:
             )
             apply_chart_theme(fig)
             fig.update_xaxes(tickprefix="R$ ")
+            fig.update_xaxes(title="Preço")
+            fig.update_yaxes(title="Posto")
             st.plotly_chart(fig, width="stretch")
             st.dataframe(
                 df_price[
                     ["nome_fantasia", "bandeira", "uf", "cidade", "bairro", "preco"]
-                ].style.format({"preco": "R$ {:.3f}"}),
+                ]
+                .rename(
+                    columns={
+                        "nome_fantasia": "Posto",
+                        "bandeira": "Bandeira",
+                        "uf": "UF",
+                        "cidade": "Cidade",
+                        "bairro": "Bairro",
+                        "preco": "Preço",
+                    }
+                )
+                .style.format({"Preço": "R$ {:.3f}"}),
                 width="stretch",
                 hide_index=True,
             )
@@ -788,7 +904,7 @@ with tab2:
     render_section_header(
         "⭐ Avaliações",
         "Top avaliações",
-        "Veja os postos com melhor média de notas e maior volume de avaliações.",
+        "Veja os postos mais bem avaliados com um score ponderado entre nota média e volume de avaliações.",
     )
     df_top_rated = zset_to_df(
         redis.zrevrange("ranking:postos:avaliacao", 0, -1, withscores=True),
@@ -803,8 +919,17 @@ with tab2:
         df_top_rated = df_top_rated[df_top_rated["rating_count"] > 0]
         df_top_rated = df_top_rated[df_top_rated["nome_fantasia"] != df_top_rated["posto_id"]]
         df_top_rated = df_top_rated[df_top_rated["cnpj"] != "-"]
+        global_mean = (
+            round(df_top_rated["nota_media"].mean(), 2) if not df_top_rated.empty else 0.0
+        )
+        df_top_rated["score_ponderado"] = df_top_rated.apply(
+            lambda row: weighted_rating_score(
+                row["nota_media"], row["rating_count"], global_mean, minimum_votes=5
+            ),
+            axis=1,
+        )
         df_top_rated = df_top_rated.sort_values(
-            ["nota_media", "rating_count"], ascending=[False, False]
+            ["score_ponderado", "nota_media", "rating_count"], ascending=[False, False, False]
         ).head(10)
         if df_top_rated.empty:
             st.info(
@@ -812,32 +937,40 @@ with tab2:
                 "Se necessário, reconstrua o Redis com a ordem de backfill atualizada."
             )
         else:
-            fig = px.scatter(
-                df_top_rated,
-                x="rating_count",
-                y="nota_media",
-                color="uf",
+            df_top_rated["label_posto"] = (
+                df_top_rated["nome_fantasia"] + " | " + df_top_rated["uf"]
+            )
+            fig = px.bar(
+                df_top_rated.sort_values(
+                    ["score_ponderado", "rating_count"], ascending=[True, True]
+                ),
+                x="score_ponderado",
+                y="label_posto",
+                orientation="h",
+                color="nota_media",
+                color_continuous_scale="Tealgrn",
                 hover_name="nome_fantasia",
                 hover_data={
                     "cidade": True,
                     "bairro": True,
                     "rating_count": True,
                     "nota_media": ":.2f",
+                    "score_ponderado": ":.3f",
                     "uf": True,
                     "cnpj": True,
+                    "label_posto": False,
                 },
-                title="Relação entre nota média e número de avaliações",
-                color_discrete_sequence=CHART_SEQUENCE,
+                title="Top postos por score ponderado de avaliação",
             )
             apply_chart_theme(fig)
-            fig.update_traces(
-                marker={"size": 14, "line": {"width": 1, "color": "rgba(255,255,255,0.75)"}}
-            )
-            fig.update_xaxes(title="Número de avaliações")
-            fig.update_yaxes(title="Nota média")
+            fig.update_xaxes(title="Score ponderado")
+            fig.update_yaxes(title="Posto")
             st.plotly_chart(fig, width="stretch")
+            st.caption(
+                f"Score ponderado calculado com média global {global_mean:.2f} e mínimo de 5 avaliações para ganhar confiança."
+            )
             display_top_rated = df_top_rated[
-                ["cnpj", "nome_fantasia", "uf", "cidade", "bairro", "nota_media", "rating_count"]
+                ["cnpj", "nome_fantasia", "uf", "cidade", "bairro", "nota_media", "rating_count", "score_ponderado"]
             ].rename(
                 columns={
                     "cnpj": "CNPJ",
@@ -847,9 +980,16 @@ with tab2:
                     "bairro": "Bairro",
                     "nota_media": "Nota média",
                     "rating_count": "Número de avaliações",
+                    "score_ponderado": "Score ponderado",
                 }
             )
-            st.dataframe(display_top_rated, width="stretch", hide_index=True)
+            st.dataframe(
+                display_top_rated.style.format(
+                    {"Nota média": "{:.2f}", "Score ponderado": "{:.3f}"}
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
 with tab4:
     render_section_header(
@@ -857,8 +997,16 @@ with tab4:
         "Maior variação recente de preço",
         "Acompanhe os postos com mudanças mais fortes de preço no período recente.",
     )
-    variation_fuel = st.selectbox(
-        "Combustível", ["Todos"] + list(COMBUSTIVEIS), index=0, key="variation_fuel"
+    variation_fuel_label = st.selectbox(
+        "Combustível",
+        ["Todos"] + fuel_display_options(),
+        index=0,
+        key="variation_fuel",
+    )
+    variation_fuel = (
+        "Todos"
+        if variation_fuel_label == "Todos"
+        else fuel_code_from_label(variation_fuel_label)
     )
     variation_rows = redis.zrevrange(
         "ranking:postos:variacao_recente", 0, -1, withscores=True
@@ -877,7 +1025,7 @@ with tab4:
                 "uf": snapshot.get("uf", "-"),
                 "cidade": snapshot.get("cidade", "-"),
                 "bairro": snapshot.get("bairro", "-"),
-                "combustivel": combustivel,
+                "combustivel": prettify_fuel_label(combustivel),
                 "preco_antigo": float(snapshot.get(f"preco_anterior_{field}", 0) or 0),
                 "preco_atual": float(snapshot.get(f"preco_{field}", 0) or 0),
                 "variacao_pct": round(
@@ -921,11 +1069,24 @@ with tab4:
                 ]
             ]
             st.dataframe(
-                df_variation.style.format(
+                df_variation.rename(
+                    columns={
+                        "cnpj": "CNPJ",
+                        "nome_fantasia": "Posto",
+                        "uf": "UF",
+                        "cidade": "Cidade",
+                        "bairro": "Bairro",
+                        "combustivel": "Combustível",
+                        "preco_antigo": "Preço Anterior",
+                        "preco_atual": "Preço Atual",
+                        "variacao_pct": "Percentual Diferença",
+                        "direcao": "Tendência",
+                    }
+                ).style.format(
                     {
-                        "preco_antigo": "R$ {:.3f}",
-                        "preco_atual": "R$ {:.3f}",
-                        "variacao_pct": "{:.2f}%",
+                        "Preço Anterior": "R$ {:.3f}",
+                        "Preço Atual": "R$ {:.3f}",
+                        "Percentual Diferença": "{:.2f}%",
                     }
                 ).apply(variation_row_style, axis=1),
                 width="stretch",
@@ -936,7 +1097,7 @@ with tab6:
     render_section_header(
         "📍 Proximidade",
         "Busca por geolocalização",
-        "Uma experiência guiada para encontrar postos perto de um território conhecido.",
+        "Encontre postos de determinada região.",
     )
     st.caption(
         "Aqui você pode usar UF, cidade e bairro como origem da busca, ou trocar para um posto de referência."
@@ -948,7 +1109,7 @@ with tab6:
         search_mode = st.radio(
             "Origem da busca",
             [
-                "Selecionar UF, cidade e bairro",
+                "Selecionar UF, Cidade e Bairro",
                 "Usar um posto real como referência",
             ],
             horizontal=True,
@@ -959,7 +1120,7 @@ with tab6:
         lon = float(default_row["lon"])
         origin_label = "Origem selecionada"
 
-        if search_mode == "Selecionar UF, cidade e bairro":
+        if search_mode == "Selecionar UF, Cidade e Bairro":
             col_uf, col_cidade, col_bairro = st.columns(3)
             uf_options = sorted(geo_catalog["uf"].dropna().unique().tolist())
             with col_uf:
@@ -1055,7 +1216,15 @@ with tab6:
                                 "bairro",
                                 "distancia_km",
                             ]
-                        ],
+                        ].rename(
+                            columns={
+                                "nome_fantasia": "Posto",
+                                "bandeira": "Bandeira",
+                                "cidade": "Cidade",
+                                "bairro": "Bairro",
+                                "distancia_km": "Distância em Km",
+                            }
+                        ),
                         width="stretch",
                         hide_index=True,
                     )
@@ -1087,7 +1256,15 @@ with tab6:
                             "bairro",
                             "distancia_km",
                         ]
-                    ],
+                    ].rename(
+                        columns={
+                            "nome_fantasia": "Posto",
+                            "bandeira": "Bandeira",
+                            "cidade": "Cidade",
+                            "bairro": "Bairro",
+                            "distancia_km": "Distância em Km",
+                        }
+                    ),
                     width="stretch",
                     hide_index=True,
                 )
@@ -1098,11 +1275,12 @@ with tab5:
     render_section_header(
         "⏱️ Séries temporais",
         "Evolução de preço",
-        "Primeiro a leitura agregada do combustível, depois o detalhe do posto escolhido.",
+        "Leitura agregada do combustível ao longo do tempo.",
     )
-    combustivel_series = st.selectbox(
-        "Combustível para média agregada", COMBUSTIVEIS, index=0
+    combustivel_series_label = st.selectbox(
+        "Combustível para média agregada", fuel_display_options(), index=0
     )
+    combustivel_series = fuel_code_from_label(combustivel_series_label)
 
     try:
         all_series = fuel_timeseries(redis, combustivel_series)
@@ -1138,14 +1316,14 @@ with tab5:
                     line={"color": COLOR_PRIMARY, "width": 3},
                 )
             )
-            fig.update_layout(title=f"Evolução média de {combustivel_series}")
+            fig.update_layout(
+                title=f"Evolução média de {prettify_fuel_label(combustivel_series)}"
+            )
             apply_chart_theme(fig)
             fig.update_yaxes(title="Preço médio (R$)")
             fig.update_xaxes(title="Data")
             st.plotly_chart(fig, width="stretch")
-            st.caption(
-                "Visual ajustado para leitura executiva: média diária com linha de tendência de 7 dias."
-            )
+
     except Exception as exc:
         st.error(f"Falha ao consolidar séries por combustível: {exc}")
 
@@ -1184,7 +1362,7 @@ with tab5:
                     ]
                 )
                 fig.update_layout(
-                    title=f"Histórico do posto {posto_id} - {combustivel_series}"
+                    title=f"Histórico do posto {posto_id} - {prettify_fuel_label(combustivel_series)}"
                 )
                 apply_chart_theme(fig)
                 st.plotly_chart(fig, width="stretch")

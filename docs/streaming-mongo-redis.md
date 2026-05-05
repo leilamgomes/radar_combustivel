@@ -1,124 +1,179 @@
-# Como funciona o streaming MongoDB → Redis neste projeto
+# Streaming MongoDB → Redis neste projeto
 
-Este projeto adapta o lab base de restaurantes para o domínio de combustíveis, preservando a mesma linha de arquitetura: um consumidor Python faz o backfill inicial, acompanha inserts via Change Stream no MongoDB e mantém estruturas otimizadas no Redis para serving em tempo real.
+Este documento descreve a arquitetura real implementada no projeto **Radar Combustível**, com foco na passagem dos dados do MongoDB para o Redis e na forma como o dashboard consome a camada de serving.
+
+---
 
 ## Visão geral do fluxo
 
-1. O seed oficial `init/mongo_seed.py` popula cinco coleções no MongoDB:
-   - `postos`
-   - `eventos_preco`
-   - `buscas_usuarios`
-   - `avaliacoes_interacoes`
-   - `localizacoes_postos`
-2. O script `init/redis_indexes.py` prepara os hashes iniciais, a estrutura GEO e o índice RediSearch `idx:postos`.
-3. O consumidor `pipeline/mongodb_consumer.py` processa primeiro o histórico já existente.
-4. Em seguida, ele abre um Change Stream no database e escuta novos inserts nas cinco coleções.
-5. Cada documento passa por `pipeline/event_transformer.py`, que normaliza o formato antes de aplicar as atualizações no Redis.
+1. `init/mongo_seed.py` popula 5 coleções no MongoDB.
+2. `init/redis_indexes.py` cria o snapshot inicial dos postos no Redis.
+3. `pipeline/mongodb_consumer.py` executa o backfill completo.
+4. Depois do backfill, o consumer mantém o Redis atualizado com Change Stream.
+5. `queries/data-view.py` e `queries/redis_reader.py` consultam somente o Redis.
 
-## Pré-requisito: Replica Set no MongoDB
+---
 
-O Change Stream exige MongoDB em Replica Set (`rs0`).
+## Coleções da origem
 
-No projeto:
-- `docker-compose.yml` sobe o Mongo com `--replSet rs0`
-- o serviço `mongo-init` inicializa o Replica Set automaticamente
+| Coleção | Papel |
+|---|---|
+| `postos` | dados cadastrais do posto |
+| `localizacoes_postos` | localização e recorte territorial |
+| `eventos_preco` | evolução e atualização de preços |
+| `buscas_usuarios` | comportamento de busca |
+| `avaliacoes_interacoes` | avaliações e interações |
 
-## Papel de cada coleção no pipeline
+---
 
-### `postos`
-- cria o snapshot principal do posto no hash `posto:{posto_id}`
-- preenche dados cadastrais como nome, bandeira, CNPJ e endereço
+## Backfill e ordem de processamento
 
-### `localizacoes_postos`
-- complementa o hash do posto com município, bairro, UF e código IBGE
-- atualiza a estrutura `geo:postos` para consultas de proximidade
+A ordem do backfill foi organizada para garantir integridade no Redis:
 
-### `eventos_preco`
-- atualiza o preço corrente do combustível no hash do posto
-- mantém rankings de menor preço por combustível e por recorte regional
-- grava a evolução dos preços em `RedisTimeSeries`
-- atualiza o ranking de maior variação recente
+```python
+BACKFILL_ORDER = (
+    "postos",
+    "localizacoes_postos",
+    "eventos_preco",
+    "buscas_usuarios",
+    "avaliacoes_interacoes",
+)
+```
 
-### `buscas_usuarios`
-- incrementa os rankings de combustíveis mais buscados
-- incrementa os rankings de UFs, cidades e bairros com maior volume de buscas
-- pode ser combinada na interface com os demais rankings territoriais na aba **Visão Geral**
+### Motivo da ordem
 
-### `avaliacoes_interacoes`
-- calcula média de avaliações por posto
-- mantém o ranking dos postos mais bem avaliados
-- acumula favoritos, compartilhamentos, denúncias e check-ins no hash do posto
+- `postos`: cria a base do hash
+- `localizacoes_postos`: completa UF, cidade, bairro e geo
+- `eventos_preco`: atualiza preço já com posto existente
+- `buscas_usuarios`: incrementa popularidade e demanda territorial
+- `avaliacoes_interacoes`: compõe score e ranking de avaliação
 
-## Estruturas Redis utilizadas
+---
 
-| Chave | Tipo | Descrição |
-|-------|------|-----------|
-| `posto:{posto_id}` | Hash | Resumo operacional do posto |
-| `ranking:precos:{combustivel}:cidade:{regiao}` | Sorted Set | Menor preço por cidade |
-| `ranking:precos:{combustivel}:bairro:{regiao}` | Sorted Set | Menor preço por bairro |
-| `ranking:combustiveis:buscas` | Sorted Set | Combustíveis mais buscados |
-| `ranking:bairros:buscas` | Sorted Set | Bairros com maior volume de buscas |
-| `ranking:cidades:buscas` | Sorted Set | Cidades com maior volume de buscas |
-| `ranking:postos:avaliacao` | Sorted Set | Postos mais bem avaliados |
-| `ranking:postos:variacao_recente` | Sorted Set | Maior variação percentual recente |
-| `geo:postos` | GEO | Busca de postos por proximidade |
-| `ts:preco:{posto_id}:{combustivel}` | TimeSeries | Histórico de preços por posto e combustível |
-| `idx:postos` | RediSearch Index | Busca textual e geoespacial sobre os hashes |
+## Change Stream
 
-## Como a interface final foi organizada
+O projeto usa Change Stream para ingestão incremental.
 
-O dashboard Streamlit ficou dividido em 6 abas:
+### Comportamento atual
 
-1. **Visão Geral**
-2. **Top Avaliações**
-3. **Ranking de Preço**
-4. **Variação de Preço**
-5. **Séries Temporais**
-6. **Proximidade**
+- escuta eventos de `insert`
+- aplica a transformação por coleção
+- atualiza as estruturas de serving no Redis
 
-Na aba **Visão Geral**, além dos KPIs principais, o painel reúne:
+### Observação importante
+
+O projeto atual está orientado a eventos append-only na camada de tempo real. Ou seja, ele não foi modelado como replicação completa de `update` em documentos existentes.
+
+Isso é suficiente para a demonstração do trabalho porque:
+- o seed gera a massa principal;
+- o pipeline faz backfill;
+- novos eventos entram como inserções.
+
+---
+
+## Estruturas Redis e uso analítico
+
+| Estrutura | Exemplo | Uso |
+|---|---|---|
+| Hash | `posto:{posto_id}` | snapshot resumido do posto |
+| Sorted Set | `ranking:precos:*` | menor preço por região |
+| Sorted Set | `ranking:combustiveis:buscas` | combustíveis em alta |
+| Sorted Set | `ranking:cidades:buscas` | cidades mais buscadas |
+| Sorted Set | `ranking:bairros:buscas` | bairros mais buscados |
+| Sorted Set | `ranking:postos:avaliacao` | base do ranking de avaliação |
+| Sorted Set | `ranking:postos:variacao_recente` | maior variação recente |
+| GEO | `geo:postos` | proximidade |
+| Time Series | `ts:preco:{posto_id}:{combustivel}` | histórico de preços |
+| RediSearch | `idx:postos` | busca textual e geoespacial |
+
+---
+
+## Transformações relevantes
+
+### Preço
+
+- grava preço atual e preço anterior no hash
+- guarda timestamp de atualização do combustível
+- atualiza rankings por cidade e bairro
+- alimenta Time Series
+- alimenta ranking de maior variação recente
+
+### Buscas
+
+- incrementa ranking de combustíveis
+- incrementa ranking de cidades e bairros
+- permite derivar UFs mais buscadas na interface
+
+### Avaliações
+
+- acumula `rating_sum`
+- acumula `rating_count`
+- calcula `avg_rating`
+- grava o ranking base de avaliação
+
+Na interface, o ranking final de avaliações não usa só média simples. Ele usa **score ponderado**, combinando:
+- nota média;
+- número de avaliações;
+- média global;
+- mínimo de confiança.
+
+---
+
+## Dashboard e consultas
+
+### Visão Geral
+
+- KPIs principais
 - combustíveis mais buscados
-- UFs mais buscadas
-- cidades mais buscadas
-- bairros mais buscados
+- UFs, cidades e bairros com maior demanda
 
-## Regras de modelagem importantes
+### Top Avaliações
 
-- O seed em `init/mongo_seed.py` não é alterado.
-- Todo mapeamento é feito no pipeline e no consumidor.
-- Os preços usam `ZADD` em ordem natural crescente, então o menor preço sai com `ZRANGE`.
-- A popularidade de combustível, bairros e cidades usa `ZINCRBY`.
-- A proximidade usa `GEOADD` e `GEOSEARCH`.
-- A evolução temporal usa `TS.ADD`, `TS.RANGE` e `TS.MRANGE`.
+- ranking por score ponderado
+- gráfico horizontal por número de avaliações e força da nota
 
-## Como executar
+### Ranking de Preço
 
-1. Suba a infraestrutura:
-   - `docker-compose up -d`
-2. Popule o MongoDB com o seed oficial:
-   - `python init/mongo_seed.py`
-3. Prepare o Redis:
-   - `python init/redis_indexes.py`
-4. Inicie o consumidor:
-   - `python pipeline/mongodb_consumer.py`
-5. Abra consultas em tempo real:
-   - `python queries/redis_reader.py`
-6. Abra o dashboard:
-   - `python -m streamlit run queries/data-view.py`
+- combustível obrigatório
+- UF obrigatória
+- cidade opcional
+- bairro opcional
 
-## O que o dashboard responde
+### Variação de Preço
 
-1. Quais postos têm menor preço por região
-2. Quais combustíveis estão em alta
-3. Quais UFs, cidades e bairros têm maior volume de buscas
-4. Quais são os postos mais bem avaliados
-5. Quais postos tiveram maior variação recente de preço
-6. Como os preços evoluem ao longo do tempo
-7. Quais postos existem perto de um ponto de referência
+- apenas registros com variação diferente de zero
+- destaque visual por cor de linha
+
+### Séries Temporais
+
+- média diária do combustível
+- tendência móvel de 7 dias
+- histórico detalhado apenas para postos com pelo menos 2 pontos
+
+### Proximidade
+
+- busca por território ou posto de referência
+- expansão automática de raio quando necessário
+
+---
 
 ## Resiliência
 
-O consumidor roda em loop contínuo:
-- tenta reconectar se o stream cair
-- faz backfill antes de entrar no modo streaming
-- trata criação preguiçosa das séries temporais quando necessário
+O consumer implementa:
+
+- reconexão automática;
+- fallback de banco quando a configuração aponta para base vazia;
+- criação preguiçosa de séries temporais;
+- backfill completo antes de escuta contínua.
+
+---
+
+## Resumo arquitetural
+
+O projeto atende o núcleo exigido pela disciplina:
+
+- modelagem orientada a consulta;
+- Redis como camada de serving;
+- pipeline MongoDB → Redis funcional;
+- uso adequado de Hash, Sorted Set, GEO e Time Series;
+- visualização prática e demonstrável.
