@@ -8,17 +8,6 @@ Coleções (conforme escopo do trabalho final):
   - avaliacoes_interacoes: avaliações, favoritos e outras interações.
   - localizacoes_postos: documento de localização indexável (geo + IBGE).
 
-Uso:
-  1) docker compose up -d
-  2) pip install -r requirements.txt
-  3) python mongo_seed.py
-
-Variáveis de ambiente (opcional):
-  MONGO_URI   (default: mongodb://localhost:27017/?directConnection=true)
-  DB_NAME     (default: radar_combustivel)
-  SEED        (default: 42)
-  BATCH_SIZE  (default: 5000)
-  N           (default: 100000) — registros por coleção
 """
 
 from __future__ import annotations

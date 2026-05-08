@@ -1,35 +1,109 @@
 # Trabalho Final — Pipeline MongoDB → Redis
 ## Plataforma Radar Combustível
 
-Projeto da disciplina **Database In-Memory** com foco em modelagem orientada a acesso, pipeline MongoDB → Redis e camada de serving rápida para consultas analíticas do caso **Radar Combustível**.
+>Projeto da disciplina **Database In-Memory** do MBA de Engenharia de Dados da FIAP, com foco em modelagem orientada a acesso, pipeline MongoDB → Redis e serving rápido com Redis para consultas analíticas do caso **Radar Combustível**.
 
----
+Prof. Daniel Lemeszenski · Março de 2026
 
-## Objetivo
+## Integrantes
 
-Transformar dados de postos, preços, localização, buscas e avaliações em uma camada de consulta rápida no Redis, capaz de responder perguntas como:
+> RM361560 - Enio Roberto Lourenço \
+> RM360485 - Luis Henrique Kalil Duarte \
+> RM363586 - Leila Moreira Gomes Roque \
+> RM365533 - Adonias Ferreira Barros
+
+
+## 🎯 Objetivo
+
+Transformar dados de postos, preços, localização, buscas e avaliações em uma camada de leitura rápida no Redis, capaz de responder perguntas como:
 
 - quais postos têm menor preço por região;
 - quais combustíveis estão em alta;
 - quais UFs, cidades e bairros têm maior volume de buscas;
-- quais postos são mais bem avaliados com critério justo de ranqueamento;
+- quais postos são mais bem avaliados;
 - quais postos tiveram maior variação recente de preço;
 - como os preços evoluem ao longo do tempo;
 - quais postos estão próximos a um ponto de referência.
 
----
 
-## Arquitetura
+## 🧱 Arquitetura
+
+![alt text](arquitetura.png)
+
+## Detalhamento Arquitetura
 
 ```text
-MongoDB (5 coleções) → Python Consumer → Redis Stack → Dashboard / Queries
+┌───────────────────────────── MONGODB ─────────────────────────────┐
+│                                                                   │
+│  postos                    eventos_preco                          │
+│  localizacoes_postos       buscas_usuarios                        │
+│  avaliacoes_interacoes                                            │
+│                                                                   │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                │ Change Stream + Backfill
+                                ▼
+┌──────────────────────── PIPELINE PYTHON ──────────────────────────┐
+│                                                                   │
+│  init/mongo_seed.py                                               │
+│  init/redis_indexes.py                                            │
+│  pipeline/event_transformer.py                                    │
+│  pipeline/mongodb_consumer.py                                     │
+│                                                                   │
+│  Ordem do backfill:                                               │
+│  1. postos                                                        │
+│  2. localizacoes_postos                                           │
+│  3. eventos_preco                                                 │
+│  4. buscas_usuarios                                               │
+│  5. avaliacoes_interacoes                                         │
+│                                                                   │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+┌────────────────────────── REDIS STACK ────────────────────────────┐
+│                                                                   │
+│  Hashes                                                           │
+│  └─ posto:{posto_id}                                              │
+│                                                                   │
+│  Sorted Sets                                                      │
+│  ├─ ranking:precos:{combustivel}:cidade:{regiao}                  │
+│  ├─ ranking:precos:{combustivel}:bairro:{regiao}                  │
+│  ├─ ranking:combustiveis:buscas                                   │
+│  ├─ ranking:cidades:buscas                                        │
+│  ├─ ranking:bairros:buscas                                        │
+│  ├─ ranking:postos:avaliacao                                      │
+│  └─ ranking:postos:variacao_recente                               │
+│                                                                   │
+│  GEO                                                              │
+│  └─ geo:postos                                                    │
+│                                                                   │
+│  Time Series                                                      │
+│  └─ ts:preco:{posto_id}:{combustivel}                             │
+│                                                                   │
+│  RediSearch                                                       │
+│  └─ idx:postos                                                    │
+│                                                                   │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────── VISUALIZAÇÃO ─────────────────────────────┐
+│                                                                   │
+│  queries/data-view.py                                             │
+│  queries/redis_reader.py                                          │
+│                                                                   │
+│  Abas do dashboard:                                               │
+│  1. Visão Geral                                                   │
+│  2. Top Avaliações                                                │
+│  3. Ranking de Preço                                              │
+│  4. Variação de Preço                                             │
+│  5. Séries Temporais                                              │
+│  6. Proximidade                                                   │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-Fluxo detalhado em [docs/streaming-mongo-redis.md](/C:/Users/leila/OneDrive/Documentos/MBA/radar-combustivel-fake-data-generator-main/docs/streaming-mongo-redis.md).
 
----
-
-## Estrutura do repositório
+## 🗂️ Estrutura do repositório
 
 ```text
 radar-combustivel-fake-data-generator-main/
@@ -37,7 +111,6 @@ radar-combustivel-fake-data-generator-main/
 ├── requirements.txt
 ├── .env.example
 ├── .env.local
-├── PDF_TRABALHO_FINAL.md
 ├── README.md
 ├── docs/
 │   └── streaming-mongo-redis.md
@@ -54,23 +127,56 @@ radar-combustivel-fake-data-generator-main/
 
 ---
 
-## Base MongoDB
+## 🧾 Base MongoDB
 
-O projeto usa as 5 coleções exigidas pelo trabalho:
+As 5 coleções obrigatórias do trabalho foram utilizadas:
 
 | Coleção | Função |
 |---|---|
-| `postos` | cadastro base dos postos |
-| `localizacoes_postos` | UF, cidade, bairro e geo dos postos |
+| `postos` | cadastro dos postos |
+| `localizacoes_postos` | UF, cidade, bairro e geo |
 | `eventos_preco` | histórico e atualização de preços |
-| `buscas_usuarios` | volume de buscas por combustível e território |
-| `avaliacoes_interacoes` | avaliações e demais interações |
+| `buscas_usuarios` | volume de busca e interesse por combustível |
+| `avaliacoes_interacoes` | avaliações e interações |
 
-Importante: `init/mongo_seed.py` foi preservado como fonte oficial de dados.
 
----
+### MongoDB — Exemplo Coleção `postos`
+```json
+{
+  "_id": {
+    "$oid": "69fd43aeeea7eb4f075af9d6"
+  },
+  "cnpj": "32.181.960/0133-89",
+  "nome_fantasia": "Posto da Cruz",
+  "bandeira": "Ipiranga",
+  "endereco": {
+    "logradouro": "Conjunto Sousa",
+    "numero": "9196",
+    "bairro": "Calafate",
+    "cep": "96001338",
+    "cidade": "Alves",
+    "estado": "RJ"
+  },
+  "telefone": "0500-083-8637",
+  "ativo": true,
+  "location": {
+    "type": "Point",
+    "coordinates": [
+      -72.532084,
+      -23.046354
+    ]
+  },
+  "created_at": {
+    "$date": "2023-09-19T04:36:23.000Z"
+  },
+  "updated_at": {
+    "$date": "2026-05-08T02:00:14.874Z"
+  }
+}
+```
 
-## Estruturas Redis utilizadas
+
+## ⚙️ Estruturas Redis utilizadas
 
 ### Hashes
 - `posto:{posto_id}` para snapshot resumido do posto
@@ -93,88 +199,36 @@ Importante: `init/mongo_seed.py` foi preservado como fonte oficial de dados.
 ### RediSearch
 - `idx:postos`
 
----
 
-## Pipeline MongoDB → Redis
 
-O consumer implementa:
+## 🔧 Configuração do Ambiente
 
-- backfill inicial;
-- roteamento por coleção;
-- atualização incremental no Redis;
-- escuta em tempo quase real via Change Stream;
-- reconexão automática em caso de falha.
+### Pré-requisitos
+- Docker + Docker Compose
+- Python 3.10+
 
-### Ordem de backfill
+#### Instalação Opcional 
+- [mongo compass](https://www.mongodb.com/try/download/compass) ide para editar dados no mongo
+- [redis insight](https://redis.io/insight/) ide para editar dados no redis
 
-```python
-BACKFILL_ORDER = (
-    "postos",
-    "localizacoes_postos",
-    "eventos_preco",
-    "buscas_usuarios",
-    "avaliacoes_interacoes",
-)
+### Variáveis de Ambiente
+
+Copie o arquivo de exemplo:
+
+```bash
+cp .env.example .env.local
 ```
 
-### Observação importante
+```env
+MONGO_URI=mongodb://localhost:27017/?directConnection=true
+DB_NAME=radar_combustivel
+MONGO_DB=radar_combustivel
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+```
 
-No estado atual, o Change Stream em tempo real está configurado para escutar eventos de `insert`. Isso atende bem ao cenário do seed e da demonstração, mas o projeto não foi modelado como sincronização completa de `update` em documentos já existentes.
-
----
-
-## Dashboard
-
-O dashboard Streamlit foi organizado nas seguintes abas:
-
-1. **Visão Geral**
-2. **Top Avaliações**
-3. **Ranking de Preço**
-4. **Variação de Preço**
-5. **Séries Temporais**
-6. **Proximidade**
-
-### O que cada aba entrega
-
-**Visão Geral**
-- KPIs principais
-- combustíveis mais buscados
-- UFs mais buscadas
-- cidades mais buscadas
-- bairros mais buscados
-
-**Top Avaliações**
-- ranking por **score ponderado**
-- combina nota média e número de avaliações
-- evita favorecer postos com apenas 1 avaliação
-
-**Ranking de Preço**
-- filtro por combustível
-- filtro por UF obrigatório
-- cidade opcional
-- bairro opcional
-- ranking por preço atual mais recente
-
-**Variação de Preço**
-- mostra apenas registros com variação real
-- tabela colorida por tendência:
-  - vermelho para alta
-  - verde para queda
-  - amarelo para manutenção
-
-**Séries Temporais**
-- evolução média diária do combustível
-- tendência móvel de 7 dias
-- histórico detalhado por posto com pelo menos 2 pontos
-
-**Proximidade**
-- busca por UF, cidade e bairro
-- ou por posto de referência
-- expansão de raio quando necessário
-
----
-
-## Como executar
+## 🚀 Como executar
 
 ### 1. Subir a infraestrutura
 
@@ -194,10 +248,10 @@ pip install -r requirements.txt
 python init/mongo_seed.py
 ```
 
-Para teste rápido:
+OU para teste rápido, com 1000 registros:
 
 ```bash
-$env:N=200; python init/mongo_seed.py
+$env:N=1000; python init/mongo_seed.py
 ```
 
 ### 4. Preparar o Redis
@@ -224,25 +278,189 @@ python queries/redis_reader.py
 python -m streamlit run queries/data-view.py
 ```
 
----
 
-## Checklist de validação
 
-- [ ] MongoDB e Redis sobem corretamente com Docker
-- [ ] O seed popula as 5 coleções
-- [ ] O Redis recebe hashes, rankings, GEO, Time Series e índice RediSearch
-- [ ] O consumer executa backfill completo
-- [ ] O dashboard lê exclusivamente do Redis
-- [ ] A aba de proximidade usa `GEOSEARCH`
-- [ ] A aba de séries temporais usa `TS.RANGE` e `TS.MRANGE`
-- [ ] O ranking de avaliações usa score ponderado
+## 📊 Dashboard
 
----
+### Aba 1 — Visão Geral
+- KPIs principais
+- combustíveis mais buscados
+- UFs mais buscadas
+- cidades mais buscadas
+- bairros mais buscados
 
-## Referências
+### Aba 2 — Top Avaliações
+- ranking por **score ponderado**
+- combina nota média e número de avaliações
+- evita favorecer postos com apenas 1 avaliação
 
-- [MongoDB Change Streams](https://www.mongodb.com/docs/manual/changeStreams/)
+### Aba 3 — Ranking de Preço
+- combustível obrigatório
+- UF obrigatória
+- cidade opcional
+- bairro opcional
+- preço atual mais recente por posto
+
+### Aba 4 — Variação de Preço
+- apenas registros com variação diferente de zero
+- tabela com cores por tendência
+
+### Aba 5 — Séries Temporais
+- média diária por combustível
+- tendência móvel de 7 dias
+- histórico detalhado por posto com pelo menos 2 pontos
+
+### Aba 6 — Proximidade
+- busca por UF, cidade e bairro
+- ou posto de referência
+- expansão automática de raio
+
+
+## 🔍 Exemplos de queries
+
+### Top 10 combustíveis mais buscados
+```python
+# redis_reader.py
+top = redis.zrevrange("ranking:combustiveis:buscas", 0, 9, withscores=True)
+```
+
+### Top 10 cidades com maior volume de buscas
+```python
+top_cities = redis.zrevrange("ranking:cidades:buscas", 0, 9, withscores=True)
+```
+
+### Top 10 bairros com maior volume de buscas
+```python
+top_neighborhoods = redis.zrevrange("ranking:bairros:buscas", 0, 9, withscores=True)
+```
+
+### Menor preço por cidade para um combustível
+```python
+city_keys = list(redis.scan_iter("ranking:precos:gasolina_comum:cidade:*"))
+sample_key = city_keys[0]
+lowest = redis.zrange(sample_key, 0, 9, withscores=True)
+```
+
+### Busca de postos por nome ou filtros com RediSearch
+```python
+from redis.commands.search.query import Query
+
+results = redis.ft("idx:postos").search(
+    Query("@uf:{SP} @cidade:{Almeida}")
+    .sort_by("rating_count", asc=False)
+    .paging(0, 10)
+)
+```
+
+### Série temporal de preço de um posto
+```python
+series_keys = list(redis.scan_iter("ts:preco:*:gasolina_comum"))
+sample_ts_key = series_keys[0]
+series = redis.execute_command(
+    "TS.RANGE",
+    sample_ts_key,
+    "-",
+    "+",
+    "AGGREGATION",
+    "avg",
+    "3600000"
+)
+```
+
+### Média temporal de um combustível
+```python
+series = redis.execute_command(
+    "TS.MRANGE",
+    "-",
+    "+",
+    "AGGREGATION",
+    "avg",
+    "3600000",
+    "FILTER",
+    "metric=price",
+    "combustivel=GASOLINA_COMUM"
+)
+```
+
+### Rodando direto no redis-cli
+```bash
+# Abrir redis-cli no container
+docker exec -it radar-combustivel-redis redis-cli
+
+# Top 10 combustíveis mais buscados
+ZREVRANGE ranking:combustiveis:buscas 0 9 WITHSCORES
+
+# Top 10 cidades com maior volume de buscas
+ZREVRANGE ranking:cidades:buscas 0 9 WITHSCORES
+
+# Top 10 bairros com maior volume de buscas
+ZREVRANGE ranking:bairros:buscas 0 9 WITHSCORES
+
+# Descobrir uma chave de ranking por cidade
+SCAN 0 MATCH ranking:precos:gasolina_comum:cidade:* COUNT 20
+
+# Menor preço usando uma chave
+ZRANGE ranking:precos:gasolina_comum:cidade:<regiao_valida> 0 9 WITHSCORES
+
+# Busca textual no índice RediSearch
+FT.SEARCH idx:postos "@uf:{SP} @cidade:{Almeida}" SORTBY rating_count DESC LIMIT 0 10
+
+# Descobrir uma série temporal
+SCAN 0 MATCH ts:preco:*:gasolina_comum COUNT 20
+
+# Série temporal de preço por hora
+TS.RANGE ts:preco:<posto_id_valido>:gasolina_comum - + AGGREGATION avg 3600000
+
+# Média temporal do combustível
+TS.MRANGE - + AGGREGATION avg 3600000 FILTER metric=price combustivel=GASOLINA_COMUM
+```
+
+## 📋 Checklist de Validação
+
+Ao terminar o projeto, verifique:
+
+- [ ] `docker-compose up -d` sobe sem erros
+- [ ] `mongo_seed.py` popula as 5 coleções
+- [ ] `redis_indexes.py` cria `idx:postos` sem erro
+- [ ] `mongodb_consumer.py` processa backfill sem travar
+- [ ] `ZREVRANGE ranking:combustiveis:buscas 0 9` retorna resultados
+- [ ] `ZRANGE ranking:precos:... 0 9` retorna ranking de preço por região
+- [ ] `GEOSEARCH geo:postos ...` retorna postos próximos
+- [ ] `TS.RANGE` retorna histórico para posto com série
+- [ ] `TS.MRANGE` retorna evolução agregada por combustível
+- [ ] o dashboard abre todas as 6 abas corretamente
+- [ ] o ranking de avaliações usa score ponderado
+
+## 💡 Decisões de Arquitetura
+
+| Decisão | Escolha | Justificativa |
+|---|---|---|
+| Fonte de eventos | MongoDB Change Stream | Captura novos inserts sem polling manual |
+| Backfill | Ordem controlada por coleção | Garante integridade dos hashes antes dos agregados |
+| Snapshot dos postos | Hashes | Acesso O(1) aos atributos principais |
+| Rankings | Sorted Sets | `ZADD`, `ZINCRBY`, `ZRANGE` e `ZREVRANGE` com ordenação nativa |
+| Busca territorial | GEO | `GEOSEARCH` resolve proximidade de forma nativa |
+| Histórico temporal | RedisTimeSeries | Série temporal com agregações nativas |
+| Busca textual | RediSearch | Índice útil para filtros e demonstração de consulta rápida |
+| Consistência | Eventual | Adequada para métricas, rankings e painéis analíticos |
+| Avaliações | Score ponderado | Evita distorção por postos com pouquíssimas avaliações |
+
+## 🔗 Referências
+
+- [MongoDB Change Streams Docs](https://www.mongodb.com/docs/manual/changeStreams/)
 - [Redis Sorted Sets](https://redis.io/docs/data-types/sorted-sets/)
-- [Redis GEO](https://redis.io/docs/data-types/geospatial/)
-- [Redis TimeSeries](https://redis.io/docs/data-types/timeseries/)
-- [Redis Query Engine / RediSearch](https://redis.io/docs/interact/search-and-query/)
+- [RediSearch Query Syntax](https://redis.io/docs/interact/search-and-query/)
+- [RedisTimeSeries](https://redis.io/docs/data-types/timeseries/)
+- Repositório do lab Vector DB: `commithouse/lab-vector-db-redis`
+
+
+
+## 🧹 Comandos para Limpar o Ambiente
+
+```bash
+# Encerrar containers e remover volumes
+docker-compose down -v
+
+# (Opcional) remover imagens baixadas
+docker-compose down --rmi local
+```

@@ -240,6 +240,21 @@ def weighted_rating_score(
     )
 
 
+def weighted_rating_series(
+    rating_means: pd.Series,
+    rating_counts: pd.Series,
+    global_mean: float,
+    minimum_votes: int = 5,
+) -> pd.Series:
+    # Versão vetorizada do score ponderado para uso direto em DataFrames.
+    counts = rating_counts.astype(float).clip(lower=0)
+    denominator = counts + float(minimum_votes)
+    scores = ((counts / denominator) * rating_means.astype(float)) + (
+        (float(minimum_votes) / denominator) * float(global_mean)
+    )
+    return scores.round(3)
+
+
 def enrich_station_rows(
     redis: Redis, df: pd.DataFrame, id_column: str = "posto_id"
 ) -> pd.DataFrame:
@@ -922,11 +937,11 @@ with tab2:
         global_mean = (
             round(df_top_rated["nota_media"].mean(), 2) if not df_top_rated.empty else 0.0
         )
-        df_top_rated["score_ponderado"] = df_top_rated.apply(
-            lambda row: weighted_rating_score(
-                row["nota_media"], row["rating_count"], global_mean, minimum_votes=5
-            ),
-            axis=1,
+        df_top_rated["score_ponderado"] = weighted_rating_series(
+            df_top_rated["nota_media"],
+            df_top_rated["rating_count"],
+            global_mean,
+            minimum_votes=5,
         )
         df_top_rated = df_top_rated.sort_values(
             ["score_ponderado", "nota_media", "rating_count"], ascending=[False, False, False]

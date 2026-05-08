@@ -1,6 +1,6 @@
 # Streaming MongoDB → Redis neste projeto
 
-Este documento descreve a arquitetura real implementada no projeto **Radar Combustível**, com foco na passagem dos dados do MongoDB para o Redis e na forma como o dashboard consome a camada de serving.
+Este documento descreve a arquitetura real implementada no projeto **Plataforma Radar Combustível**, com foco na passagem dos dados do MongoDB para o Redis e na forma como o dashboard consome a camada de serving.
 
 ---
 
@@ -59,15 +59,6 @@ O projeto usa Change Stream para ingestão incremental.
 - escuta eventos de `insert`
 - aplica a transformação por coleção
 - atualiza as estruturas de serving no Redis
-
-### Observação importante
-
-O projeto atual está orientado a eventos append-only na camada de tempo real. Ou seja, ele não foi modelado como replicação completa de `update` em documentos existentes.
-
-Isso é suficiente para a demonstração do trabalho porque:
-- o seed gera a massa principal;
-- o pipeline faz backfill;
-- novos eventos entram como inserções.
 
 ---
 
@@ -177,3 +168,5 @@ O projeto atende o núcleo exigido pela disciplina:
 - pipeline MongoDB → Redis funcional;
 - uso adequado de Hash, Sorted Set, GEO e Time Series;
 - visualização prática e demonstrável.
+
+---
