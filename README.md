@@ -6,7 +6,6 @@
 ![Redis](https://img.shields.io/badge/Redis-Stack-DC382D?style=for-the-badge&logo=redis&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)
-![FIAP](https://img.shields.io/badge/FIAP-Database%20In--Memory-ED145B?style=for-the-badge)
 
 
 ## ⛽ Plataforma Radar Combustível
