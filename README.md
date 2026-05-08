@@ -1,11 +1,23 @@
 # Trabalho Final — Pipeline MongoDB → Redis
-## Plataforma Radar Combustível
 
->Projeto da disciplina **Database In-Memory** do MBA de Engenharia de Dados da FIAP, com foco em modelagem orientada a acesso, pipeline MongoDB → Redis e serving rápido com Redis para consultas analíticas do caso **Radar Combustível**.
 
-Prof. Daniel Lemeszenski · Março de 2026
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-Change%20Streams-47A248?style=for-the-badge&logo=mongodb&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-Stack-DC382D?style=for-the-badge&logo=redis&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![FIAP](https://img.shields.io/badge/FIAP-Database%20In--Memory-ED145B?style=for-the-badge)
 
-## Integrantes
+
+## ⛽ Plataforma Radar Combustível
+
+>Projeto da disciplina **Database In-Memory** do MBA de Engenharia de Dados da FIAP, com foco em modelagem orientada a acesso, pipeline MongoDB → Redis e serving rápido com Redis para consultas analíticas do caso **Radar Combustível**. 
+
+> Prof. Daniel Lemeszenski · Março de 2026
+
+
+
+## 👥 Integrantes
 
 > RM361560 - Enio Roberto Lourenço \
 > RM360485 - Luis Henrique Kalil Duarte \
@@ -25,12 +37,21 @@ Transformar dados de postos, preços, localização, buscas e avaliações em um
 - como os preços evoluem ao longo do tempo;
 - quais postos estão próximos a um ponto de referência.
 
+## 🧰 Stack Tecnológica
 
-## 🧱 Arquitetura
+| Camada | Tecnologia | Papel no projeto |
+|---|---|---|
+| Ingestão e eventos | ![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white) | Base principal e origem dos eventos |
+| Pipeline | ![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white) | Backfill, transformação e sincronização |
+| Serving | ![Redis](https://img.shields.io/badge/Redis%20Stack-DC382D?style=flat-square&logo=redis&logoColor=white) | Hash, ZSET, GEO, TimeSeries e RediSearch |
+| Visualização | ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat-square&logo=streamlit&logoColor=white) | Dashboard analítico |
+| Infra local | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white) | Containers do MongoDB e Redis |
+
+## 🧱 Arquitetura Detalhada
 
 ![alt text](arquitetura.png)
 
-## Detalhamento Arquitetura
+
 
 ```text
 ┌───────────────────────────── MONGODB ─────────────────────────────┐
